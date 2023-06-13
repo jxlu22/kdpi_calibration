@@ -1,0 +1,250 @@
+---
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(haven)
+library(dplyr)
+library(tibble)
+library(lubridate)
+library(tidyverse)
+library(readr)
+library(gtsummary)
+options(scipen = 999)
+```
+
+#add donor files
+```{r, echo=FALSE}
+donordata <- read_sas('donor_deceased.sas7bdat') #upload donor data q1
+donordisp <- read_sas('donor_disposition.sas7bdat') #upload donor disp q1
+```
+
+#clean up donor disposition
+```{r, echo=FALSE}
+start_date <- ymd(20100101)
+end_date <- ymd(20201231)
+kidney_codes <- c("EKI", "LKI", "RKI")
+recovery_codes <- seq(5,6)
+
+donordisp <- donordisp %>%
+    filter(DON_RECOV_DT>=start_date & DON_RECOV_DT <=end_date) %>%
+    filter(DON_ORG %in% kidney_codes & DON_DISPOSITION %in% recovery_codes) %>%
+    select(DONOR_ID, DON_DISPOSITION, DON_ORG, DON_RECOV_DT, PX_ID)
+  
+donordisp
+```
+
+#clean up donordata + add modifications to fit kdri formula
+```{r, echo=FALSE}
+donordata <- filter(donordata, DONOR_ID %in% donordisp$DONOR_ID) %>%
+  mutate(year=year(DON_RECOV_DT))
+
+donordata <- donordata %>%
+  mutate(dcd = case_when(
+    is.na(DON_DCD_AGONAL_BEGIN_TM) == TRUE ~ 0,
+    is.na(DON_DCD_AGONAL_BEGIN_TM) ==FALSE ~ 1)) #add dcd
+
+#hcv
+donordata <- donordata %>%
+  mutate(hcv = if_else(DON_HCV_NAT == "P" | DON_HCV_STAT == "1", 1, 0))
+
+#COD
+donordata <- donordata %>%
+  mutate(cod = if_else(DON_CAD_DON_COD == 2, 1, 0))
+
+#weight mod for only < 80 kg
+donordata <- donordata %>%
+  mutate(wgt = if_else(DON_WGT_KG < 80, 1, 0))
+
+#creat limits
+#calculator does not allow input outside of this range
+donordata <- donordata %>%
+  filter(DON_CREAT>=.01 & DON_CREAT <=40) %>%
+  mutate(creat = if_else(DON_CREAT >= 8, 8, DON_CREAT))
+
+#age limit
+#calculator does not allow input outside of this range
+donordata <- donordata %>%
+  filter(DON_AGE>=0 & DON_AGE <=99)
+
+#height limit
+#calculator does not allow input outside of this range
+donordata <- donordata %>%
+  filter(DON_HGT_CM <=241.3)
+
+#weight limit
+#calculator does not allow input outside of this range
+donordata <- donordata %>%
+  filter(DON_WGT_KG>=.454 & DON_WGT_KG <=294)
+
+#diabetes
+donordata <- donordata %>%  
+  mutate(dia = case_when(
+    DON_HIST_DIAB == '1' ~ 0,
+    DON_HIST_DIAB == '2' |  DON_HIST_DIAB == '3' | DON_HIST_DIAB == '4' | DON_HIST_DIAB == '5' ~ 1,
+    DON_HIST_DIAB == '998' ~ 0.12267292265779,
+    TRUE ~ as.numeric(NA)))
+
+#htn
+donordata <- donordata %>% 
+  mutate(hyp = case_when(
+    DON_HIST_HYPERTEN == '1' ~ 0,
+    DON_HIST_HYPERTEN == '2' |  DON_HIST_HYPERTEN == '3' | DON_HIST_HYPERTEN == '4' | DON_HIST_HYPERTEN == '5' ~ 1,
+    DON_HIST_HYPERTEN == '998' ~ 0.34925079461178,
+    TRUE ~ as.numeric(NA)))
+
+donordata <- donordata %>%
+  select(DONOR_ID, DON_RECOV_DT, DON_AGE, DON_HGT_CM, DON_WGT_KG, wgt, DON_RACE_BLACK_AFRICAN_AMERICAN, hyp, dia, cod, creat, DON_HIGH_CREAT, year, hcv, dcd)
+```
+
+#calculate kdri rao
+```{r, echo = FALSE}
+donordata <- donordata %>% #kdri rao
+  mutate(kdri_rao = case_when(
+    (DON_AGE < 18 & DON_HIGH_CREAT == 1) ~ exp(.0128*(DON_AGE-40) - .0194*(DON_AGE-18)  - .0464*(DON_HGT_CM - 170)/10 - .0199*wgt*(DON_WGT_KG - 80)/5 + .1790*DON_RACE_BLACK_AFRICAN_AMERICAN + .1260*hyp + .1300*dia + .0881*cod + .2200*(creat - 1) - .2090*(creat-1.5) + .2400*hcv + .1330*dcd),
+    (DON_AGE < 18 & DON_HIGH_CREAT == 0) ~ exp(.0128*(DON_AGE-40) - .0194*(DON_AGE-18)  - .0464*(DON_HGT_CM - 170)/10 - .0199*wgt*(DON_WGT_KG - 80)/5 + .1790*DON_RACE_BLACK_AFRICAN_AMERICAN + .1260*hyp + .1300*dia + .0881*cod + .2200*(creat - 1) + .2400*hcv + .1330*dcd),
+     (DON_AGE > 50 & DON_HIGH_CREAT == 1) ~ exp(.0128*(DON_AGE-40) + .0107*(DON_AGE-50) - .0464*(DON_HGT_CM - 170)/10 - .0199*wgt*(DON_WGT_KG - 80)/5 + .1790*DON_RACE_BLACK_AFRICAN_AMERICAN + .1260*hyp + .1300*dia + .0881*cod + .2200*(creat - 1) - .2090*(creat-1.5) + .2400*hcv + .1330*dcd),
+     (DON_AGE > 50 & DON_HIGH_CREAT == 0) ~ exp(.0128*(DON_AGE-40) + .0107*(DON_AGE-50) - .0464*(DON_HGT_CM - 170)/10 - .0199*wgt*(DON_WGT_KG - 80)/5 + .1790*DON_RACE_BLACK_AFRICAN_AMERICAN + .1260*hyp + .1300*dia + .0881*cod + .2200*(creat - 1) + .2400*hcv + .1330*dcd),
+     (DON_AGE <= 50 & DON_AGE >= 17 & DON_HIGH_CREAT == 1) ~ exp(.0128*(DON_AGE-40) - .0464*(DON_HGT_CM - 170)/10 - .0199*wgt*(DON_WGT_KG - 80)/5 + .1790*DON_RACE_BLACK_AFRICAN_AMERICAN + .1260*hyp + .1300*dia + .0881*cod + .2200*(creat - 1) - .2090*(creat-1.5) + .2400*hcv + .1330*dcd),
+     (DON_AGE <= 50 & DON_AGE >= 17 & DON_HIGH_CREAT == 0) ~ exp(.0128*(DON_AGE-40) - .0464*(DON_HGT_CM - 170)/10 - .0199*wgt*(DON_WGT_KG - 80)/5 + .1790*DON_RACE_BLACK_AFRICAN_AMERICAN + .1260*hyp + .1300*dia + .0881*cod + .2200*(creat - 1) - + .2400*hcv + .1330*dcd)
+  ))
+```
+
+#kdri median
+```{r, echo=FALSE}
+donordata <- donordata %>% #kdri med
+  mutate(kdri_med =  kdri_rao/1.318253823684) #2021 scaling factor
+donordata <- filter(donordata, is.na(kdri_med) == FALSE)
+```
+
+#make kdpi
+```{r, echo=FALSE}
+kdpi_mapping_table <- read.csv("kdpi_mapping_table_mod.csv")
+```
+
+#calculate KDPI percentiles
+```{r}
+donordata <- donordata %>% mutate(
+  kdpi = cut(kdri_med, c(0,as.vector(kdpi_mapping_table$max)), labels=seq(0, 100)), include.lowest=FALSE)
+
+donordata <- donordata %>% arrange(kdpi)
+```
+
+#KDRI rao w/o race
+```{r, echo=FALSE}
+donordata <- donordata %>%
+  mutate(kdri_rao_noeth = case_when(
+    (DON_AGE < 18 & DON_HIGH_CREAT == 1) ~ exp(.0128*(DON_AGE-40) - .0194*(DON_AGE-18)  - .0464*(DON_HGT_CM - 170)/10 - .0199*wgt*(DON_WGT_KG - 80)/5  + .1260*hyp + .1300*dia + .0881*cod + .2200*(creat - 1) - .2090*(creat-1.5) + .2400*hcv + .1330*dcd),
+    (DON_AGE < 18 & DON_HIGH_CREAT == 0) ~ exp(.0128*(DON_AGE-40) - .0194*(DON_AGE-18)  - .0464*(DON_HGT_CM - 170)/10 - .0199*wgt*(DON_WGT_KG - 80)/5  + .1260*hyp + .1300*dia + .0881*cod + .2200*(creat - 1) + .2400*hcv + .1330*dcd),
+     (DON_AGE > 50 & DON_HIGH_CREAT == 1) ~ exp(.0128*(DON_AGE-40) + .0107*(DON_AGE-50) - .0464*(DON_HGT_CM - 170)/10 - .0199*wgt*(DON_WGT_KG - 80)/5  + .1260*hyp + .1300*dia + .0881*cod + .2200*(creat - 1) - .2090*(creat-1.5) + .2400*hcv + .1330*dcd),
+     (DON_AGE > 50 & DON_HIGH_CREAT == 0) ~ exp(.0128*(DON_AGE-40) + .0107*(DON_AGE-50) - .0464*(DON_HGT_CM - 170)/10 - .0199*wgt*(DON_WGT_KG - 80)/5  + .1260*hyp + .1300*dia + .0881*cod + .2200*(creat - 1) + .2400*hcv + .1330*dcd),
+     (DON_AGE <= 50 & DON_AGE >= 17 & DON_HIGH_CREAT == 1) ~ exp(.0128*(DON_AGE-40) - .0464*(DON_HGT_CM - 170)/10 - .0199*wgt*(DON_WGT_KG - 80)/5  + .1260*hyp + .1300*dia + .0881*cod + .2200*(creat - 1) - .2090*(creat-1.5) + .2400*hcv + .1330*dcd),
+     (DON_AGE <= 50 & DON_AGE >= 17 & DON_HIGH_CREAT == 0) ~ exp(.0128*(DON_AGE-40) - .0464*(DON_HGT_CM - 170)/10 - .0199*wgt*(DON_WGT_KG - 80)/5  + .1260*hyp + .1300*dia + .0881*cod + .2200*(creat - 1) - + .2400*hcv + .1330*dcd)
+  ))
+donordata
+```
+
+#scaling for kdri without race
+```{r, echo=FALSE}
+donordata_noeth_for2021 <- subset(donordata, year == 2020, select=c(year, kdri_rao_noeth))
+scaling_noeth_for2021 <- median(donordata_noeth_for2021$kdri_rao_noeth)
+```
+
+#kdri median w/o race
+```{r, echo=FALSE}
+donordata <- donordata %>% #kdri med without ethnicity
+  mutate(kdri_med_noeth =  kdri_rao_noeth/scaling_noeth_for2021)
+donordata <- filter(donordata, is.na(kdri_med) == FALSE)
+donordata
+```
+
+#kdpi percentiles without race
+```{r, echo=FALSE}
+donordata21 <- donordata %>% filter(year == 2020)
+cutoffs_noeth <- quantile(as.numeric(donordata21$kdri_med_noeth), probs = seq(0, 1, .01), fmt = '%#.14f')
+
+donordata <- donordata %>% mutate(
+  kdpi_noeth = cut(kdri_med_noeth, c(0, cutoffs_noeth), labels=seq(0,100)))
+donordata
+```
+
+#table 1
+```{r}
+table1 <- donordata %>%
+  mutate(Hypertension = hyp) %>%
+  mutate(Hypertension = if_else(Hypertension == 1, "Positive",
+                                if_else(Hypertension == 0, "Negative", "Unknown"))) %>%
+  mutate(Diabetes = dia) %>%
+  mutate(Diabetes = if_else(Diabetes == 1, "Positive",
+                                if_else(Diabetes == 0, "Negative", "Unknown"))) %>%
+  select(DON_AGE, DON_HGT_CM, DON_WGT_KG, DON_RACE_BLACK_AFRICAN_AMERICAN, Hypertension, Diabetes, cod, creat, hcv, dcd)
+
+table1_table <- table1 %>% tbl_summary(label = list(cod ~ "Cause of Death as CVA", creat ~ "Serum Creatinine in mg/dL", hcv ~ "Positive HCV Status", dcd ~ "Recovered as a DCD" )) %>% modify_header(label ~ "**Variable**") %>%  modify_footnote(
+    all_stat_cols() ~ "Median (IQR) or Frequency (%)"
+  ) %>%
+  modify_caption("**Deceased Kidney Donor Characteristics, 2010-2020**")
+table1_table
+```
+
+#add recipient data
+```{r, echo=FALSE}
+recipdata <- read_sas('tx_ki.sas7bdat') #upload the recipient data
+recipdata <- filter(recipdata, DONOR_ID %in% donordata$DONOR_ID)
+
+recipdata <- recipdata  %>%
+  mutate(cutoff=as.Date("2023-02-28")) %>%
+  mutate(endtime = case_when(
+    (is.na(TFL_GRAFT_DT) == FALSE ~ pmin(cutoff, TFL_GRAFT_DT)),
+    (is.na(TFL_DEATH_DT)==FALSE | is.na(PERS_OPTN_DEATH_DT)==FALSE | is.na(PERS_SSA_DEATH_DT)==FALSE) ~ pmin(cutoff,pmin(TFL_DEATH_DT, PERS_OPTN_DEATH_DT, PERS_SSA_DEATH_DT, na.rm = TRUE)),
+    (is.na(TFL_GRAFT_DT) == TRUE & is.na(TFL_DEATH_DT)==TRUE & is.na(PERS_OPTN_DEATH_DT)==TRUE & is.na(PERS_SSA_DEATH_DT)==TRUE) ~ pmin(cutoff, TFL_LAFUDATE, na.rm = TRUE)
+    )
+  )
+
+recipdata <- recipdata %>%
+  mutate(status = if_else(TFL_LASTATUS=="D" | TFL_LASTATUS =="R", 1, 0)) %>% #dead = 1, censored = 0
+  mutate(survtime = as.numeric(difftime(endtime, REC_TX_DT, units = c("days")))) %>%
+  select(DONOR_ID, REC_TX_DT, REC_TX_PROCEDURE_TY, survtime, TFL_GRAFT_DT, TFL_DEATH_DT, PERS_OPTN_DEATH_DT, PERS_SSA_DEATH_DT, endtime, TFL_LASTATUS, TFL_LAFUDATE, status) %>% arrange(DONOR_ID)
+
+recipdata
+```
+
+#combine donor and recip
+```{r, echo=FALSE}
+fulldata <- donordata %>% right_join(recipdata,  by=c("DONOR_ID"))
+fulldata$race <- cut(fulldata$DON_RACE_BLACK_AFRICAN_AMERICAN, breaks = c(-Inf, 0,1), 
+                 labels = c("Other", "Black/African-American"))
+fulldata <- fulldata %>% mutate(
+  age_under18 = if_else(DON_AGE < 18, 1, 0),
+  age_over50 = if_else(DON_AGE > 50, 1, 0),
+  age_minus18 = if_else(DON_AGE < 18, DON_AGE - 18, 0),
+  age_minus50 = if_else(DON_AGE > 50, DON_AGE - 50 , 0),
+  age18 = age_under18*age_minus18,
+  age50 = age_over50*age_minus50,
+  hgt_minus170_div10 = (DON_HGT_CM-170)/10,
+  wgt_minus80_div15 = (DON_WGT_KG-80)/5,
+  wgtvar = wgt*wgt_minus80_div15,
+  creat_minus1 = creat - 1,
+  creat_minus1.5 = creat - 1.5,
+  highcreat = DON_HIGH_CREAT*creat_minus1.5,
+  age_minus40 = DON_AGE - 40,
+  kdpidiff = as.numeric(kdpi_noeth) - as.numeric(kdpi),
+  en_bloc = if_else(REC_TX_PROCEDURE_TY==103, 1, 0),
+  xb_kdri_rao = log(kdri_rao),
+  xb_kdri_rao_noeth = log(kdri_rao_noeth)
+)
+fulldata <- fulldata %>%
+  mutate(kdpiquant = cut(as.numeric(kdpi), c(0,20,34,50,70, 85,100), labels=c("0-20", "21-34", "35-50", "51-70", "71-85", "81-100"))) %>%
+  mutate(kdpiquant_noeth = cut(as.numeric(kdpi_noeth), c(0,20,34,50,70, 85,100), labels=c("0-20", "21-34", "35-50", "51-70", "71-85", "81-100")))
+fulldata <- fulldata %>%
+  mutate(race = cut(fulldata$DON_RACE_BLACK_AFRICAN_AMERICAN, breaks = c(-Inf, 0,1), 
+                 labels = c("Other", "Black/African-American")))
+fulldata
+```
+
+#full dataset
+```{r, echo=FALSE}
+write_csv(fulldata, "fulldata.csv")
+```
