@@ -1,0 +1,283 @@
+---
+title: "KDPI"
+output: html_notebook
+date: '2023-05-22'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(haven)
+library(dplyr)
+library(tibble)
+library(readr)
+library(lubridate)
+library(tidyverse)
+library(gtsummary)
+library(survival)
+library(survminer)
+library(Hmisc)
+library(survivalmodels)
+library(reticulate)
+library(survAUC)
+library(survC1)
+library(rms)
+library(ggplot2)
+library(stats)
+library(ggthemes)
+options(scipen = 999)
+```
+
+#import data
+```{r, echo=FALSE}
+fulldata <- read.csv("fulldata.csv")
+```
+
+#KDPI difference with race dropped, 2020
+```{r}
+fulldata %>%
+  group_by(DON_RACE_BLACK_AFRICAN_AMERICAN) %>%
+  summarise_at(c("kdpidiff"), mean, na.rm = TRUE)
+
+data20 <- fulldata %>% filter(year == 2020)
+
+kdpiplot <- ggplot(data20, aes(x = kdpi, y = kdpi_noeth, color = race)) +
+  geom_smooth() +
+  labs(title = "KDPI Scores With & Without Race Term", x = "Original KDPI Score", y = "KDPI Score Without Race Term", color = "Race") + 
+  scale_x_continuous(breaks = seq(0, 100, by=10)) +
+  scale_y_continuous(breaks = seq(0, 100, by=10)) +
+  theme(plot.title = element_text(size = 30, face = "bold"),
+    legend.title=element_text(size=30), 
+    legend.text=element_text(size=30),
+    axis.title=element_text(size=30),
+    axis.text = element_text(size=15)) + 
+  geom_abline(intercept = 0, slope = 1, color = "grey")
+
+kdpiplot
+```
+
+#KM plots by quantile
+```{r, echo=FALSE}
+kdpifit <- survfit(Surv(survtime, status)~ kdpiquant, data=fulldata)
+coefkdpifit <- coef(kdpifit)
+
+
+kdpifit_noeth <- survfit(Surv(survtime, status)~ kdpiquant_noeth, data=fulldata)
+
+km_kdpiplot <- ggsurvplot(kdpifit, data = fulldata, combine = TRUE, CI = TRUE, title = "Survival Probability per KDPI Quantile", legend.title = "Score", legend.labs = c("0-20", "21-34", "35-50", "51-70", "71-85", "81-100"), xscale = 365.25, break.x.by = 365.25, xlab = "Years Post-Transplant", xlim=c(0, 365.25*10)) %++%
+  theme(plot.title = element_text(size = 40, face = "bold"),
+    legend.title=element_text(size=40), 
+    legend.text=element_text(size=40),
+    axis.title=element_text(size=40))
+
+
+km_kdpiplot_noeth <- ggsurvplot(kdpifit_noeth, data = fulldata, combine = TRUE, CI = TRUE, title = "Survival Probability per KDPI Quantile\nwith 'Ethnicity' Dropped", legend.title = "Score", legend.labs= c("0-20", "21-34", "35-50", "51-70", "71-85", "81-100"), break.x.by = 365.25, xscale = 365.25, xlab = "Years Post-Transplant", xlim=c(0, 365.25*10)) %++%
+  theme(plot.title = element_text(size = 40, face = "bold"),
+    legend.title=element_text(size=40), 
+    legend.text=element_text(size=40),
+    axis.title=element_text(size=40))
+
+
+km_kdpiplot
+km_kdpiplot_noeth
+```
+
+#Fit novel model
+```{r}
+cox_newfit <- coxph(Surv(survtime, status) ~ rcs(DON_AGE, 4) + rcs(DON_HGT_CM, 4) + rcs(DON_WGT_KG, 3) + rcs(creat, 4) +
+                  hyp + dia + cod +  hcv + dcd + en_bloc, data=fulldata, x=T, y=T)
+```
+
+#Check AIC for spline knot number
+```{r}
+AIC(cox_newfit)
+```
+
+#Coefs for novel
+```{r}
+summary(cox_newfit)
+```
+
+#Spline curves
+```{r rcs}
+age_rcs <- tibble(kdri_age_spline = predict(cox_newfit),
+       age = fulldata$DON_AGE) %>%
+  ggplot(aes(x = age, y= kdri_age_spline)) +
+  geom_smooth() +
+  labs(title = "RCS for Age", x = "Age (Years)", y = "Change in Raw Score") + theme_classic() +
+  theme(plot.title = element_text(size = 50, face = "bold"),
+    axis.title=element_text(size=35),
+    axis.text = element_text(size=25))
+age_rcs
+
+hgt_rcs <- tibble(kdri_hgt_spline = predict(cox_newfit),
+       hgt = fulldata$DON_HGT_CM) %>%
+  ggplot(aes(x = hgt, y= kdri_hgt_spline)) +
+  geom_smooth() +
+  labs(title = "RCS for Height", x = "Height (cm)", y = "Change in Raw Score") + theme_classic() +
+  theme(plot.title = element_text(size = 50, face = "bold"),
+    axis.title=element_text(size=35),
+    axis.text = element_text(size=25))
+hgt_rcs
+
+wgt_rcs <- tibble(kdri_wgt_spline = predict(cox_newfit),
+       wgt = fulldata$DON_WGT_KG) %>%
+  ggplot(aes(x = wgt, y= kdri_wgt_spline)) +
+  geom_smooth() +
+  labs(title = "RCS for Weight", x = "Weight (kg)", y = "Change in Raw Score") + theme_classic() +
+  theme(plot.title = element_text(size = 50, face = "bold"),
+    axis.title=element_text(size=35),
+    axis.text = element_text(size=25))
+wgt_rcs
+
+creat_rcs <- tibble(kdri_creat_spline = predict(cox_newfit),
+       creat = fulldata$creat) %>%
+  ggplot(aes(x = creat, y= kdri_creat_spline)) +
+  geom_smooth() +
+  labs(title = "RCS for Creatinine", x = "Serum Creatinine (mg/dL)", y = "Change in Raw Score") + theme_classic() +
+  theme(plot.title = element_text(size = 50, face = "bold"),
+    axis.title=element_text(size=35),
+    axis.text = element_text(size=25))
+creat_rcs
+```
+
+#Novel percentiles
+```{r, echo=FALSE}
+fulldata <- fulldata %>%
+  mutate(xb_new = predict(cox_newfit),
+    newscore_raw = exp(xb_new))
+data20 <- fulldata %>% filter(year == 2020)
+newscore_scaling <- median(data20$newscore_raw)
+
+fulldata <- fulldata %>%
+  mutate(newscore_med = newscore_raw/newscore_scaling) %>%
+  mutate(newscore_med = as.numeric(newscore_med))
+data20 <- fulldata %>% filter(year == 2020)
+cutoffs_new <- as.numeric(quantile(data20$newscore_med, probs = seq(0, 1, .01), fmt = '%#.14f'))
+
+fulldata <- fulldata %>%
+  mutate(newpercentile =cut(newscore_med, c(0, cutoffs_new),labels=seq(0,100))) %>%
+  mutate(newpercentile = as.numeric(newpercentile)) %>%
+  mutate(newdiff = as.numeric(newpercentile) - as.numeric(kdpi))
+data20 <- fulldata %>% filter(year == 2020)
+fulldata %>%
+  group_by(DON_RACE_BLACK_AFRICAN_AMERICAN) %>%
+  summarise_at(c("newdiff"), mean, na.rm = TRUE)
+```
+
+#linear spline plots
+```{r linear}
+#age linear spline
+age_ls <- tibble(age = seq(0, 99, 1))
+age_ls <- age_ls %>% mutate(
+  withcoef = case_when(
+    age < 18 ~ exp(.0128*(age-40) - .0194*(age-18)),
+    age > 50 ~ exp(.0128*(age-40) + .0107*(age-50)),
+    (age <= 50 & age >= 17) ~ exp(.0128*(age-40)))) %>%
+  ggplot(aes(x = age, y= withcoef)) +
+  geom_path() +
+  labs(title = "Linear Spline for Age", x = "Age (Years)", y = "Change in Raw Score") + theme_classic() +
+  theme(plot.title = element_text(size = 50, face = "bold"),
+    axis.title=element_text(size=35),
+    axis.text = element_text(size=25))
+age_ls
+
+#height linear spline
+hgt_ls <- tibble(hgt = seq(0, 241.3, .1))
+hgt_ls <- hgt_ls %>% mutate(
+  withcoef = exp(-.0464*(hgt - 170)/10)) %>%
+  ggplot(aes(x = hgt, y= withcoef)) +
+  geom_path() +
+  labs(title = "Linear Spline for Height", x = "Height (cm)", y = "Change in Raw Score") + theme_classic() +
+  theme(plot.title = element_text(size = 50, face = "bold"),
+    axis.title=element_text(size=35),
+    axis.text = element_text(size=25))
+hgt_ls
+
+#weight linear spline
+wgt_ls <- tibble(wgt = seq(0.454, 294, .001))
+wgt_ls <- wgt_ls %>% mutate(withcoef =
+  case_when(
+    wgt < 80 ~ exp(-.0199*1*(wgt - 80)/5),
+    wgt >= 80 ~ exp(-.0199*0*(wgt - 80)/5))) %>%
+  ggplot(aes(x = wgt, y= withcoef)) +
+  geom_path() +
+  labs(title = "Linear Spline for Weight", x = "Weight (kg)", y = "Change in Raw Score") + theme_classic() +
+  theme(plot.title = element_text(size = 50, face = "bold"),
+    axis.title=element_text(size=35),
+    axis.text = element_text(size=25))
+wgt_ls
+
+#creat linear spline
+creat_ls <- tibble(creat = seq(.01, 40, .01))
+creat_ls <- creat_ls %>% mutate(
+  creat = if_else(creat > 8, 8, creat),
+  withcoef = if_else(creat > 1.5, exp(.2200*(creat - 1) - .2090*(creat-1.5)), exp(.2200*(creat - 1)))) %>%
+  ggplot(aes(x = creat, y= withcoef)) +
+  geom_path() +
+  labs(title = "Linear Spline for Creatinine", x = "Serum Creatinine (mg/dL)", y = "Change in Raw Score") + theme_classic() +
+  theme(plot.title = element_text(size = 50, face = "bold"),
+    axis.title=element_text(size=35),
+    axis.text = element_text(size=25))
+creat_ls
+```
+
+#Novel vs KDPI, all years
+```{r}
+new_vs_kdpi_plot <- ggplot(data20, aes(x = kdpi, y = newpercentile, color = race)) + geom_point() +
+  labs(title = "Novel Model Percentile vs. KDPI Scores", x = "Original KDPI Score", y = "Novel Model Score", color = "Race") + 
+  scale_x_continuous(breaks = seq(0, 100, by=10)) +
+  scale_y_continuous(breaks = seq(0, 100, by=10)) + theme_gdocs()
+
+new_vs_kdpi_plot
+```
+
+#upper left corner is all HCV
+```{r}
+data20 %>%
+  filter((newpercentile - kdpi) > 30) %>%
+  count(hcv)
+```
+
+#Re-fit with/without race
+```{r}
+cox_refit <- coxph(Surv(survtime, status) ~ xb_kdri_rao, data=fulldata)
+summary(cox_refit)
+cox_refit_noeth <- coxph(Surv(survtime, status) ~ xb_kdri_rao_noeth, data=fulldata)
+summary(cox_refit_noeth)
+cox_novel <- coxph(Surv(survtime, status) ~ xb_new, data=fulldata)
+summary(cox_novel)
+```
+#Harrell's C
+```{r}
+#harrell
+summary(cox_refit)
+summary(cox_refit_noeth)
+summary(cox_novel)
+```
+
+#Uno's C - do not run this unless on rcc node/equivalent or else will take 10 lifetimes to finish
+```{r, eval=FALSE}
+#10 fold cross validation for kdri rao as-is
+data_kdri_rao <- fulldata %>% 
+  select(survtime, status, xb_kdri_rao)
+
+cvC(data_kdri_rao,365.25,cvK=10,Rep=10)
+cvC(data_kdri_rao,365.25*5,cvK=10,Rep=10)
+cvC(data_kdri_rao,365.25*10,cvK=10,Rep=10)
+
+#10 fold cross validation for kdri rao noeth
+data_kdri_rao_noeth <- fulldata %>%
+  select(survtime, status, xb_kdri_rao_noeth)
+
+cvC(data_kdri_rao_noeth,365.25,cvK=10,Rep=10)
+cvC(data_kdri_rao_noeth,365.25*5,cvK=10,Rep=10)
+cvC(data_kdri_rao_noeth,365.25*10,cvK=10,Rep=10)
+
+#10 fold cross validation for kdri rao re-fit
+data_novel <- fulldata %>%
+  select(survtime, status, xb_new)
+
+cvC(data_novel,365.25,cvK=10,Rep=10)
+cvC(data_novel,365.25*5,cvK=10,Rep=10)
+cvC(data_novel,365.25*10,cvK=10,Rep=10)
+```
