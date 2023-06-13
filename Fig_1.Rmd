@@ -1,0 +1,404 @@
+---
+title: "Fig 1"
+output: html_document
+date: "2023-05-25"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(tibble)
+library(survival)
+library(ggthemes)
+library(rms)
+library(purrr)
+library(tidyr)
+options(scipen = 999)
+```
+
+#import data
+```{r, echo=FALSE}
+fulldata <- read.csv("fulldata.csv")
+fulldata %>% filter(DON_RACE_BLACK_AFRICAN_AMERICAN == 1)
+```
+
+# Fit KM survival of black donors and extract number at risk over time
+```{r km_fit_black_donors}
+data_blackdonors <- fulldata %>% filter(DON_RACE_BLACK_AFRICAN_AMERICAN==1)
+
+km_fit_black <- survfit(Surv(survtime, status) ~  1, data = data_blackdonors)
+
+n_at_risk_black_donors <- tibble(time = km_fit_black$time,
+                                 num_risk = km_fit_black$n.risk)
+
+n_at_risk_1_yr <- n_at_risk_black_donors %>% filter(time == 365+1) %>% pull(num_risk)
+n_at_risk_5_yr <- n_at_risk_black_donors %>% filter(time == 5*365) %>% pull(num_risk)
+n_at_risk_10_yr <- n_at_risk_black_donors %>% filter(time == 10*365) %>% pull(num_risk)
+```
+
+# Re-fit race-inclusive KDPI
+```{r}
+cox_refit <- coxph(Surv(survtime, status) ~ xb_kdri_rao, data=fulldata)
+
+hazard_refit <- basehaz(cox_refit, centered = FALSE)
+
+xb_black_donors_refit <- fulldata %>%
+  cbind(xb_refit = predict(cox_refit)) %>%
+  filter(DON_RACE_BLACK_AFRICAN_AMERICAN == 1) %>%
+  pull(xb_refit) %>%
+  mean()
+
+sd_xb_black_donors_refit <- fulldata %>%
+  cbind(xb_refit = predict(cox_refit)) %>%
+  filter(DON_RACE_BLACK_AFRICAN_AMERICAN == 1) %>%
+  pull(xb_refit) %>%
+  sd()
+
+xb_low_1_year <- xb_black_donors_refit - 1.96*sd_xb_black_donors_refit/sqrt(n_at_risk_1_yr-1)
+xb_up_1_year <- xb_black_donors_refit + 1.96*sd_xb_black_donors_refit/sqrt(n_at_risk_1_yr-1)
+
+xb_low_5_year <- xb_black_donors_refit - 1.96*sd_xb_black_donors_refit/sqrt(n_at_risk_5_yr-1)
+xb_up_5_year <- xb_black_donors_refit + 1.96*sd_xb_black_donors_refit/sqrt(n_at_risk_5_yr-1)
+
+xb_low_10_year <- xb_black_donors_refit - 1.96*sd_xb_black_donors_refit/sqrt(n_at_risk_10_yr-1)
+xb_up_10_year <- xb_black_donors_refit + 1.96*sd_xb_black_donors_refit/sqrt(n_at_risk_10_yr-1)
+
+for_survival_plot <- hazard_refit %>%
+  mutate(S0_t = exp(-hazard),
+         S_t_black_KDPI = S0_t^exp(xb_black_donors_refit),
+         S_t_black_KDPI_1_year_low_CI = S0_t^exp(xb_low_1_year),
+         S_t_black_KDPI_1_year_up_CI = S0_t^exp(xb_up_1_year),
+         S_t_black_KDPI_5_year_low_CI = S0_t^exp(xb_low_5_year),
+         S_t_black_KDPI_5_year_up_CI = S0_t^exp(xb_up_5_year),
+         S_t_black_KDPI_10_year_low_CI = S0_t^exp(xb_low_10_year),
+         S_t_black_KDPI_10_year_up_CI = S0_t^exp(xb_up_10_year)) 
+
+
+point_estimate_table <- for_survival_plot %>% filter(time == c(365+1, 5*365, 10*365)) %>% 
+  left_join(n_at_risk_black_donors) %>%
+  mutate(low_ci_kdpi = case_when(
+      time == 366 ~ S_t_black_KDPI_1_year_up_CI,
+      time == 1825 ~ S_t_black_KDPI_5_year_up_CI,
+      time == 3650 ~  S_t_black_KDPI_10_year_up_CI),
+    up_ci_kdpi = case_when(
+      time == 366 ~ S_t_black_KDPI_1_year_low_CI,
+      time == 1825 ~ S_t_black_KDPI_5_year_low_CI,
+      time == 3650 ~  S_t_black_KDPI_10_year_low_CI)
+    ) %>%
+  select(time, S_t_black_KDPI, low_ci_kdpi, up_ci_kdpi) %>%
+  mutate(se_kdpi = abs(S_t_black_KDPI -up_ci_kdpi)/1.96)
+
+point_estimate_table
+```
+
+
+# Re-fit race-neutral KDPI
+```{r}
+xb_black_donors_refit_noeth <- fulldata %>%
+  cbind(xb_refit_noeth = predict(cox_refit)) %>%
+  filter(DON_RACE_BLACK_AFRICAN_AMERICAN == 1) %>%
+  pull(xb_refit_noeth) %>%
+  mean() - .1790*cox_refit$coefficients
+
+sd_xb_black_donors_refit_noeth <- fulldata %>%
+  cbind(xb_refit_noeth = predict(cox_refit)) %>%
+  filter(DON_RACE_BLACK_AFRICAN_AMERICAN == 1) %>%
+  pull(xb_refit_noeth) %>%
+  sd()
+
+xb_low_1_year_noeth <- xb_black_donors_refit_noeth - 1.96*sd_xb_black_donors_refit_noeth/sqrt(n_at_risk_1_yr-1)
+xb_up_1_year_noeth <- xb_black_donors_refit_noeth + 1.96*sd_xb_black_donors_refit_noeth/sqrt(n_at_risk_1_yr-1)
+
+xb_low_5_year_noeth <- xb_black_donors_refit_noeth - 1.96*sd_xb_black_donors_refit_noeth/sqrt(n_at_risk_5_yr-1)
+xb_up_5_year_noeth <- xb_black_donors_refit_noeth + 1.96*sd_xb_black_donors_refit_noeth/sqrt(n_at_risk_5_yr-1)
+
+xb_low_10_year_noeth <- xb_black_donors_refit_noeth - 1.96*sd_xb_black_donors_refit_noeth/sqrt(n_at_risk_10_yr-1)
+xb_up_10_year_noeth <- xb_black_donors_refit_noeth + 1.96*sd_xb_black_donors_refit_noeth/sqrt(n_at_risk_10_yr-1)
+
+for_survival_plot_noeth <- hazard_refit %>%
+  mutate(S0_t = exp(-hazard),
+         S_t_black_KDPI_noeth = S0_t^exp(xb_black_donors_refit_noeth)) %>%
+  select(time, S_t_black_KDPI_noeth)
+
+for_survival_plot_noeth <- hazard_refit %>%
+  mutate(S0_t = exp(-hazard),
+         S_t_black_KDPI_noeth = S0_t^exp(xb_black_donors_refit_noeth),
+         S_t_black_KDPI_1_year_low_CI_noeth = S0_t^exp(xb_low_1_year_noeth),
+         S_t_black_KDPI_1_year_up_CI_noeth = S0_t^exp(xb_up_1_year_noeth),
+         S_t_black_KDPI_5_year_low_CI_noeth = S0_t^exp(xb_low_5_year_noeth),
+         S_t_black_KDPI_5_year_up_CI_noeth = S0_t^exp(xb_up_5_year_noeth),
+         S_t_black_KDPI_10_year_low_CI_noeth = S0_t^exp(xb_low_10_year_noeth),
+         S_t_black_KDPI_10_year_up_CI_noeth = S0_t^exp(xb_up_10_year_noeth)) 
+
+
+point_estimate_table_noeth <- for_survival_plot_noeth %>% filter(time == c(365+1, 5*365, 10*365)) %>% 
+  left_join(n_at_risk_black_donors) %>%
+  mutate(low_ci_kdpi_noeth = case_when(
+      time == 366 ~ S_t_black_KDPI_1_year_up_CI_noeth,
+      time == 1825 ~ S_t_black_KDPI_5_year_up_CI_noeth,
+      time == 3650 ~  S_t_black_KDPI_10_year_up_CI_noeth),
+    up_ci_kdpi_noeth = case_when(
+      time == 366 ~ S_t_black_KDPI_1_year_low_CI_noeth,
+      time == 1825 ~ S_t_black_KDPI_5_year_low_CI_noeth,
+      time == 3650 ~  S_t_black_KDPI_10_year_low_CI_noeth)
+    ) %>%
+  select(time, S_t_black_KDPI_noeth, low_ci_kdpi_noeth, up_ci_kdpi_noeth) %>%
+  mutate(se_kdpi_noeth = abs(S_t_black_KDPI_noeth -up_ci_kdpi_noeth)/1.96)
+
+point_estimate_table_noeth <- point_estimate_table_noeth %>% left_join(for_survival_plot_noeth %>% filter(time == c(365+1, 5*365, 10*365)))
+
+point_estimate_table_noeth
+```
+
+# Fit Novel
+```{r}
+cox_newfit <- coxph(Surv(survtime, status) ~ rcs(DON_AGE, 4) + rcs(DON_HGT_CM, 4) + rcs(DON_WGT_KG, 3) + rcs(creat, 4) + hyp + dia + cod +  hcv + dcd + en_bloc, data=fulldata, x=T, y=T)
+
+
+fulldata <- fulldata %>%
+  mutate(xb_new = predict(cox_newfit))
+
+cox_novel <- coxph(Surv(survtime, status) ~ xb_new, data=fulldata)
+
+hazard_newfit <- basehaz(cox_novel, centered = FALSE)
+
+xb_black_donors_newfit <- fulldata %>%
+  cbind(xb_newfit = predict(cox_newfit)) %>%
+  filter(DON_RACE_BLACK_AFRICAN_AMERICAN == 1) %>%
+  pull(xb_newfit) %>%
+  mean()
+
+sd_xb_black_donors_newfit <- fulldata %>%
+  cbind(xb_newfit = predict(cox_novel)) %>%
+  filter(DON_RACE_BLACK_AFRICAN_AMERICAN == 1) %>%
+  pull(xb_newfit) %>%
+  sd()
+
+xb_low_1_year_newfit <- xb_black_donors_newfit - 1.96*sd_xb_black_donors_newfit/sqrt(n_at_risk_1_yr-1)
+xb_up_1_year_newfit <- xb_black_donors_newfit + 1.96*sd_xb_black_donors_newfit/sqrt(n_at_risk_1_yr-1)
+
+xb_low_5_year_newfit <- xb_black_donors_newfit - 1.96*sd_xb_black_donors_newfit/sqrt(n_at_risk_5_yr-1)
+xb_up_5_year_newfit <- xb_black_donors_newfit + 1.96*sd_xb_black_donors_newfit/sqrt(n_at_risk_5_yr-1)
+
+xb_low_10_year_newfit <- xb_black_donors_newfit - 1.96*sd_xb_black_donors_newfit/sqrt(n_at_risk_10_yr-1)
+xb_up_10_year_newfit <- xb_black_donors_newfit + 1.96*sd_xb_black_donors_newfit/sqrt(n_at_risk_10_yr-1)
+
+for_survival_plot_newfit <- hazard_newfit %>%
+  mutate(S0_t = exp(-hazard),
+         S_t_black_newfit = S0_t^exp(xb_black_donors_newfit),
+         S_t_black_KDPI_1_year_low_CI_newfit = S0_t^exp(xb_low_1_year_newfit),
+         S_t_black_KDPI_1_year_up_CI_newfit = S0_t^exp(xb_up_1_year_newfit),
+         S_t_black_KDPI_5_year_low_CI_newfit = S0_t^exp(xb_low_5_year_newfit),
+         S_t_black_KDPI_5_year_up_CI_newfit = S0_t^exp(xb_up_5_year_newfit),
+         S_t_black_KDPI_10_year_low_CI_newfit = S0_t^exp(xb_low_10_year_newfit),
+         S_t_black_KDPI_10_year_up_CI_newfit = S0_t^exp(xb_up_10_year_newfit)) 
+
+
+point_estimate_table_newfit <- for_survival_plot_newfit %>% filter(time == c(365+1, 5*365, 10*365)) %>% 
+  left_join(n_at_risk_black_donors) %>%
+  mutate(low_ci_kdpi_newfit = case_when(
+      time == 366 ~ S_t_black_KDPI_1_year_up_CI_newfit,
+      time == 1825 ~ S_t_black_KDPI_5_year_up_CI_newfit,
+      time == 3650 ~  S_t_black_KDPI_10_year_up_CI_newfit),
+    up_ci_kdpi_newfit = case_when(
+      time == 366 ~ S_t_black_KDPI_1_year_low_CI_newfit,
+      time == 1825 ~ S_t_black_KDPI_5_year_low_CI_newfit,
+      time == 3650 ~  S_t_black_KDPI_10_year_low_CI_newfit)
+    ) %>%
+  select(time, S_t_black_newfit, low_ci_kdpi_newfit, up_ci_kdpi_newfit) %>%
+  mutate(se_kdpi_newfit = abs(S_t_black_newfit -up_ci_kdpi_newfit)/1.96)
+
+point_estimate_table_newfit
+```
+
+#CIs
+```{r}
+truesurv_table <- tibble( time = km_fit_black$time,
+        observed_surv = km_fit_black$surv,
+        se_surv = km_fit_black$std.err,
+        observed_low = km_fit_black$lower,
+        observed_up = km_fit_black$upper) %>%
+  filter(time %in% c(366, 5*365, 10*365))
+
+truesurv_table
+point_estimate_table
+point_estimate_table_noeth
+point_estimate_table_newfit
+```
+#t statistics
+```{r true survival}
+t_stat_1yr_true_kdpi <- abs(truesurv_table %>% filter(time==366) %>% select(observed_surv) - point_estimate_table %>% filter(time==366) %>% pull(S_t_black_KDPI))/sqrt((truesurv_table %>% filter(time==366) %>% pull(se_surv))^2 + (point_estimate_table %>% filter(time==366) %>% pull(se_kdpi))^2)
+t_stat_1yr_true_kdpi_noeth <- abs(truesurv_table %>% filter(time==366) %>% pull(observed_surv) - point_estimate_table_noeth %>% filter(time==366) %>% pull(S_t_black_KDPI_noeth))/sqrt((truesurv_table %>% filter(time==366) %>% pull(se_surv))^2 + (point_estimate_table_noeth %>% filter(time==366) %>% pull(se_kdpi_noeth))^2)
+t_stat_1yr_true_kdpi_newfit <- abs(truesurv_table %>% filter(time==366) %>% pull(observed_surv) - point_estimate_table_newfit %>% filter(time==366) %>% pull(S_t_black_newfit))/sqrt((truesurv_table %>% filter(time==366) %>% pull(se_surv))^2 + (point_estimate_table_newfit %>% filter(time==366) %>% pull(se_kdpi_newfit))^2)
+
+t_stat_5yr_true_kdpi <- abs(truesurv_table %>% filter(time==365*5) %>% pull(observed_surv) - point_estimate_table %>% filter(time==365*5) %>% pull(S_t_black_KDPI))/sqrt((truesurv_table %>% filter(time==365*5) %>% pull(se_surv))^2 + (point_estimate_table %>% filter(time==365*5) %>% pull(se_kdpi))^2)
+t_stat_5yr_true_kdpi_noeth <- abs(truesurv_table %>% filter(time==365*5) %>% pull(observed_surv) - point_estimate_table_noeth %>% filter(time==365*5) %>% pull(S_t_black_KDPI_noeth))/sqrt((truesurv_table %>% filter(time==365*5) %>% pull(se_surv))^2 + (point_estimate_table_noeth %>% filter(time==365*5) %>% pull(se_kdpi_noeth))^2)
+t_stat_5yr_true_kdpi_newfit <- abs(truesurv_table %>% filter(time==365*5) %>% pull(observed_surv) - point_estimate_table_newfit %>% filter(time==365*5) %>% pull(S_t_black_newfit))/sqrt((truesurv_table %>% filter(time==365*5) %>% pull(se_surv))^2 + (point_estimate_table_newfit %>% filter(time==365*5) %>% pull(se_kdpi_newfit))^2)
+
+t_stat_10yr_true_kdpi <- abs(truesurv_table %>% filter(time==365*10) %>% pull(observed_surv) - point_estimate_table %>% filter(time==365*10) %>% pull(S_t_black_KDPI))/sqrt((truesurv_table %>% filter(time==365*10) %>% pull(se_surv))^2 + (point_estimate_table %>% filter(time==365*10) %>% pull(se_kdpi))^2)
+t_stat_10yr_true_kdpi_noeth <- abs(truesurv_table %>% filter(time==365*10) %>% pull(observed_surv) - point_estimate_table_noeth %>% filter(time==365*10) %>% pull(S_t_black_KDPI_noeth))/sqrt((truesurv_table %>% filter(time==365*10) %>% pull(se_surv))^2 + (point_estimate_table_noeth %>% filter(time==365*10) %>% pull(se_kdpi_noeth))^2)
+t_stat_10yr_true_kdpi_newfit <- abs(truesurv_table %>% filter(time==365*10) %>% pull(observed_surv) - point_estimate_table_newfit %>% filter(time==365*10) %>% pull(S_t_black_newfit))/sqrt((truesurv_table %>% filter(time==365*10) %>% pull(se_surv))^2 + (point_estimate_table_newfit %>% filter(time==365*10) %>% pull(se_kdpi_newfit))^2)
+```
+
+
+```{r kdpi}
+t_stat_1yr_kdpi_kdpi_noeth <- abs(point_estimate_table %>% filter(time==366) %>% pull(S_t_black_KDPI) - point_estimate_table_noeth %>% filter(time==366) %>% pull(S_t_black_KDPI_noeth))/sqrt((point_estimate_table %>% filter(time==366) %>% pull(se_kdpi))^2 + (point_estimate_table_noeth %>% filter(time==366) %>% pull(se_kdpi_noeth))^2)
+t_stat_1yr_kdpi_kdpi_newfit <- abs(point_estimate_table %>% filter(time==366) %>% pull(S_t_black_KDPI) - point_estimate_table_newfit %>% filter(time==366) %>% pull(S_t_black_newfit))/sqrt((point_estimate_table %>% filter(time==366) %>% pull(se_kdpi))^2 + (point_estimate_table_newfit %>% filter(time==366) %>% pull(se_kdpi_newfit))^2)
+
+t_stat_5yr_kdpi_kdpi_noeth <- abs(point_estimate_table %>% filter(time==365*5) %>% pull(S_t_black_KDPI) - point_estimate_table_noeth %>% filter(time==365*5) %>% pull(S_t_black_KDPI_noeth))/sqrt((point_estimate_table %>% filter(time==365*5) %>% pull(se_kdpi))^2 + (point_estimate_table_noeth %>% filter(time==365*5) %>% pull(se_kdpi_noeth))^2)
+t_stat_5yr_kdpi_kdpi_newfit <- abs(point_estimate_table %>% filter(time==365*5) %>% pull(S_t_black_KDPI) - point_estimate_table_newfit %>% filter(time==365*5) %>% pull(S_t_black_newfit))/sqrt((point_estimate_table %>% filter(time==365*5) %>% pull(se_kdpi))^2 + (point_estimate_table_newfit %>% filter(time==365*5) %>% pull(se_kdpi_newfit))^2)
+
+t_stat_10yr_kdpi_kdpi_noeth <- abs(point_estimate_table %>% filter(time==365*10) %>% pull(S_t_black_KDPI) - point_estimate_table_noeth %>% filter(time==365*10) %>% pull(S_t_black_KDPI_noeth))/sqrt((point_estimate_table %>% filter(time==365*10) %>% pull(se_kdpi))^2 + (point_estimate_table_noeth %>% filter(time==365*10) %>% pull(se_kdpi_noeth))^2)
+t_stat_10yr_kdpi_kdpi_newfit <- abs(point_estimate_table %>% filter(time==365*10) %>% pull(S_t_black_KDPI) - point_estimate_table_newfit %>% filter(time==365*10) %>% pull(S_t_black_newfit))/sqrt((point_estimate_table %>% filter(time==365*10) %>% pull(se_kdpi))^2 + (point_estimate_table_newfit %>% filter(time==365*10) %>% pull(se_kdpi_newfit))^2)
+```
+
+
+```{r kdpi w/o race}
+t_stat_1yr_kdpi_noeth_newfit <- abs(point_estimate_table_noeth %>% filter(time==366) %>% pull(S_t_black_KDPI_noeth) - point_estimate_table_newfit %>% filter(time==366) %>% pull(S_t_black_newfit))/sqrt((point_estimate_table_noeth %>% filter(time==366) %>% pull(se_kdpi_noeth))^2 + (point_estimate_table_newfit %>% filter(time==366) %>% pull(se_kdpi_newfit))^2)
+
+t_stat_5yr_kdpi_noeth_newfit <- abs(point_estimate_table_noeth %>% filter(time==365*5) %>% pull(S_t_black_KDPI_noeth) - point_estimate_table_newfit %>% filter(time==365*5) %>% pull(S_t_black_newfit))/sqrt((point_estimate_table_noeth %>% filter(time==365*5) %>% pull(se_kdpi_noeth))^2 + (point_estimate_table_newfit %>% filter(time==365*5) %>% pull(se_kdpi_newfit))^2)
+
+t_stat_10yr_kdpi_noeth_newfit <- abs(point_estimate_table_noeth %>% filter(time==365*10) %>% pull(S_t_black_KDPI_noeth) - point_estimate_table_newfit %>% filter(time==365*10) %>% pull(S_t_black_newfit))/sqrt((point_estimate_table_noeth %>% filter(time==365*10) %>% pull(se_kdpi_noeth))^2 + (point_estimate_table_newfit %>% filter(time==365*10) %>% pull(se_kdpi_newfit))^2)
+```
+
+#Find p values
+```{r test}
+tstats_1yr <- tibble(t_stat_1yr_true_kdpi, 
+                t_stat_1yr_true_kdpi_noeth,
+                t_stat_1yr_true_kdpi_newfit,
+                t_stat_1yr_kdpi_kdpi_noeth,
+                t_stat_1yr_kdpi_kdpi_newfit,
+                t_stat_1yr_kdpi_noeth_newfit)
+tstats_1yr <- as.numeric(tstats_1yr)
+
+tstats_5yr <- c(t_stat_5yr_true_kdpi,
+                t_stat_5yr_true_kdpi_noeth,
+                t_stat_5yr_true_kdpi_newfit,
+                t_stat_5yr_kdpi_kdpi_noeth,
+                t_stat_5yr_kdpi_kdpi_newfit,
+                t_stat_5yr_kdpi_noeth_newfit)
+tstats_5yr <- as.numeric(tstats_5yr)
+
+tstats_10yr <- c(t_stat_10yr_true_kdpi,
+                 t_stat_10yr_true_kdpi_noeth,
+                 t_stat_10yr_true_kdpi_newfit,
+                 t_stat_10yr_kdpi_kdpi_noeth,
+                 t_stat_10yr_kdpi_kdpi_newfit,
+                 t_stat_10yr_kdpi_noeth_newfit)
+tstats_10yr <- as.numeric(tstats_10yr)
+
+pvalues_1yr <- numeric()
+for (i in 1:length(tstats_1yr)) {
+  pvalues_1yr[i] <- pt(tstats_1yr[i], df=n_at_risk_1_yr - 1, lower.tail = FALSE)
+}
+pvalues_1yr %>% tibble()
+
+pvalues_5yr <- numeric()
+for (i in 1:length(tstats_5yr)) {
+  pvalues_5yr[i] <- pt(tstats_5yr[i], df=n_at_risk_5_yr - 1, lower.tail = FALSE)
+}
+pvalues_5yr %>% tibble()
+
+pvalues_10yr <- numeric()
+for (i in 1:length(tstats_10yr)) {
+  pvalues_10yr[i] <- pt(tstats_10yr[i], df=n_at_risk_10_yr - 1, lower.tail = FALSE)
+}
+pvalues_10yr %>% tibble()
+```
+
+
+#Actual plot
+```{r}
+calibplot_data <- merge(for_survival_plot, for_survival_plot_noeth, by = "time", all = TRUE)
+calibplot_data <- merge(calibplot_data, for_survival_plot_newfit, by = "time", all = TRUE)
+```
+
+```{r}
+calibplot_full <- calibplot_data %>%
+  left_join(tibble(time = km_fit_black$time,
+       S_km = km_fit_black$surv)) %>%
+  select(time, S_t_black_newfit, S_t_black_KDPI, S_t_black_KDPI_noeth, S_km) %>%
+  pivot_longer(cols = -time, names_prefix = "S_") %>% 
+  ggplot(aes(x = time, y = value, color = name)) +
+  geom_step(size=1.5) +
+  labs(title = "Survival for Black Donor Kidneys Compared to \nModel Predictions", x = "Graft Survival (Years)", y = "Survival Probability", color = "Legend") + 
+  scale_x_continuous(breaks=seq(from=365.25, to=365.25*10, by=365.25), label = seq(from=1, to=10, by=1), limits = c(0,365.25*10)) + 
+  scale_y_continuous(breaks=seq(from=.55, to=1, by=.05), limits = c(.55,1)) + theme_classic() + scale_color_gdocs(labels = c("True Survival", "Race-Inclusive KDPI", "Race-Neutral KDPI", "Novel Model")) +
+  theme(plot.title = element_text(size = 40, face = "bold"),
+    legend.title=element_text(size=30), 
+    legend.text=element_text(size=30),
+    axis.title=element_text(size=25),
+    axis.text = element_text(size=25))
+
+
+calibplot_full
+```
+
+#Plot of true survival alone
+```{r}
+calibplot_true <- calibplot_data %>%
+  left_join(tibble(time = km_fit_black$time,
+       S_km = km_fit_black$surv)) %>%
+  select(time, S_km) %>%
+  pivot_longer(cols = -time, names_prefix = "S_") %>% 
+  ggplot(aes(x = time, y = value, color = name)) +
+  geom_step(size=1.5) +
+  labs(title = "Survival for Black Donor Kidneys Compared to \nModel Predictions", x = "Graft Survival (Years)", y = "Survival Probability", color = "Legend") +
+  scale_x_continuous(breaks=seq(from=365.25, to=365.25*10, by=365.25), label = seq(from=1, to=10, by=1), limits = c(0,365.25*10)) + 
+  scale_y_continuous(breaks=seq(from=.55, to=1, by=.05), limits = c(.55,1)) + theme_classic() + scale_color_gdocs(labels = c("True Survival")) +
+  theme(plot.title = element_text(size = 40, face = "bold"),
+    legend.title=element_text(size=30), 
+    legend.text=element_text(size=30),
+    axis.title=element_text(size=25),
+    axis.text = element_text(size=25))
+
+calibplot_true
+```
+
+#Plot true + race-inclusive KDPI
+```{r}
+km_fit_black <- survfit(Surv(survtime, status) ~  1, data = data_blackdonors)
+
+calibplot_true_kdpi <- calibplot_data %>%
+  left_join(tibble(time = km_fit_black$time,
+       S_km = km_fit_black$surv)) %>%
+  select(time, S_t_black_KDPI, S_km) %>%
+  pivot_longer(cols = -time, names_prefix = "S_") %>% 
+  ggplot(aes(x = time, y = value, color = name)) +
+  geom_step(size=1.5) +
+  labs(title = "Survival for Black Donor Kidneys Compared to \nModel Predictions", x = "Graft Survival (Years)", y = "Survival Probability", color = "Legend") + 
+  scale_x_continuous(breaks=seq(from=365.25, to=365.25*10, by=365.25), label = seq(from=1, to=10, by=1), limits = c(0,365.25*10)) + 
+  scale_y_continuous(breaks=seq(from=.55, to=1, by=.05), limits = c(.55,1)) + theme_classic() + scale_color_gdocs(labels = c("True Survival", "Race-Inclusive KDPI")) +
+  theme(plot.title = element_text(size = 40, face = "bold"),
+    legend.title=element_text(size=30), 
+    legend.text=element_text(size=30),
+    axis.title=element_text(size=25),
+    axis.text = element_text(size=25))
+
+
+calibplot_true_kdpi
+```
+
+#plot everything but novel
+```{r}
+km_fit_black <- survfit(Surv(survtime, status) ~  1, data = data_blackdonors)
+
+calibplot_true_kdpi_noeth <- calibplot_data %>%
+  left_join(tibble(time = km_fit_black$time,
+       S_km = km_fit_black$surv)) %>%
+  select(time, S_t_black_KDPI, S_t_black_KDPI_noeth, S_km) %>%
+  pivot_longer(cols = -time, names_prefix = "S_") %>% 
+  ggplot(aes(x = time, y = value, color = name)) +
+  geom_step(size=1.5) +
+  labs(title = "Survival for Black Donor Kidneys Compared to \nModel Predictions", x = "Graft Survival (Years)", y = "Survival Probability", color = "Legend") + 
+  scale_x_continuous(breaks=seq(from=365.25, to=365.25*10, by=365.25), label = seq(from=1, to=10, by=1), limits = c(0,365.25*10)) + 
+  scale_y_continuous(breaks=seq(from=.55, to=1, by=.05), limits = c(.55,1)) + theme_classic() + scale_color_gdocs(labels = c("True Survival", "Race-Inclusive KDPI", "Race-Neutral KDPI")) +
+  theme(plot.title = element_text(size = 40, face = "bold"),
+    legend.title=element_text(size=30), 
+    legend.text=element_text(size=30),
+    axis.title=element_text(size=25),
+    axis.text = element_text(size=25))
+
+
+calibplot_true_kdpi_noeth
+```
